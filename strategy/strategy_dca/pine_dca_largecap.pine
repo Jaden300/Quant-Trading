@@ -1,0 +1,197 @@
+// DCA Long Strategy — Nonstop Dollar-Cost Averaging, Cross-Asset Optimized
+//
+// HOW IT WORKS:
+//   Runs a nonstop DCA ladder — always in the market on every ticker.
+//   1. Opens a base order at market.
+//   2. If price drops so_step% below entry → fills safety order 1 (adds to position).
+//      Each additional so_step% drop fills the next safety order (up to max_so).
+//      Safety orders increase in size: SO_n = BO × 0.75 × 1.05^(n-1)
+//   3. When price rises tp_pct% above average entry → take profit, close everything.
+//   4. Immediately opens a new base order (nonstop / perpetual).
+//
+//   Sizing: bo_size = available_cash × risk_pct / total_factor
+//   where total_factor accounts for all pending SOs so the full ladder fits the budget.
+//
+// OPTIMIZED VALUES (10 stocks: NVDA GOOG AAPL MSFT AMZN AVGO META TSLA AMD NFLX)
+// Test window: Jan 2021 → Apr 2026  |  $1,500 capital  |  33% per trade  |  Long only
+// TP=30%  SO Step=18%  Max SOs=5
+// Score=0.616  |  Mean Sharpe=0.727  |  Min Sharpe=0.434 (all tickers profitable)
+// Avg return +18.9%  |  Avg drawdown -9.1%  |  Win rate 91.4%  |  75 trades / 204d avg hold
+// Per-stock $1500: NVDA→$1965  GOOG→$1739  AAPL→$1624  MSFT→$1626
+//                  AMZN→$1636  AVGO→$1882  META→$1820  TSLA→$1855  AMD→$1947  NFLX→$1737
+
+//@version=6
+strategy("DCA Long (Nonstop)", overlay=true,
+         initial_capital=1500,
+         commission_type=strategy.commission.percent,
+         commission_value=1.5,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=33,
+         calc_on_every_tick=false)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+
+grp0 = "Date Filter"
+startDate = input.time(timestamp("2021-01-01"), "Start Date", group=grp0)
+
+grp1 = "DCA Settings"
+tpPct    = input.float(30.0, "Take Profit %",      minval=1.0,  maxval=100.0, step=1.0,  group=grp1,
+           tooltip="Close the position when price rises this % above avg entry price.") / 100
+soStep   = input.float(18.0, "Safety Order Step %", minval=1.0,  maxval=50.0,  step=0.5,  group=grp1,
+           tooltip="Each safety order triggers when price is this many % below the BASE order price. SO1 at -18%, SO2 at -36%, etc.") / 100
+maxSo    = input.int  (5,    "Max Safety Orders",  minval=0,    maxval=10,                group=grp1,
+           tooltip="Maximum number of safety orders in the ladder.")
+
+grp2 = "Display"
+showLevels  = input.bool(true,  "Show SO / TP Levels", group=grp2)
+showAvgLine = input.bool(true,  "Show Avg Entry Line",  group=grp2)
+colorBars   = input.bool(true,  "Color Bars",           group=grp2)
+
+// ── Constants (from 3Commas Gold DCA Long) ────────────────────────────────────
+// SO_RATIO = 9/12 = 0.75   (SO volume relative to BO)
+// VOL_COEF = 1.05           (each successive SO 5% larger)
+// STEP_COEF = 1.0           (constant step spacing)
+
+float SO_RATIO = 0.75
+float VOL_COEF = 1.05
+
+// ── State vars ────────────────────────────────────────────────────────────────
+
+var float basePrice  = na   // price of the base order for this deal
+var float avgEntry   = na   // current volume-weighted average entry price
+var float tpLevel    = na   // current TP target
+var float totalSpent = na   // total raw volume deployed (for avg price)
+var float totalQty   = na   // total qty held
+var int   soFilled   = 0    // safety orders filled in this deal
+var bool  inDeal     = false
+
+inDateRange = time >= startDate
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+totalFactor() =>
+    float f = 1.0
+    for k = 1 to maxSo
+        f += SO_RATIO * math.pow(VOL_COEF, k - 1)
+    f
+
+soTrigger(n) =>
+    basePrice * (1.0 - soStep * n)
+
+soVol(boVol, n) =>
+    boVol * SO_RATIO * math.pow(VOL_COEF, n - 1)
+
+// ── Open base order ───────────────────────────────────────────────────────────
+
+if not inDeal and inDateRange and barstate.isconfirmed
+    float boVol   = strategy.equity * 0.33 / totalFactor()
+    strategy.entry("DCA", strategy.long, qty=boVol / close, comment="BO")
+    basePrice  := close
+    avgEntry   := close
+    tpLevel    := close * (1.0 + tpPct)
+    totalSpent := boVol
+    totalQty   := boVol / close
+    soFilled   := 0
+    inDeal     := true
+
+// ── Safety orders ─────────────────────────────────────────────────────────────
+
+if inDeal and inDateRange and barstate.isconfirmed
+    float boVol = strategy.equity * 0.33 / totalFactor()
+    for n = soFilled + 1 to maxSo
+        if low <= soTrigger(n)
+            float vol   = soVol(boVol, n)
+            float price = soTrigger(n)
+            strategy.entry("DCA", strategy.long, qty=vol / price,
+                           comment="SO" + str.tostring(n))
+            totalSpent := totalSpent + vol
+            totalQty   := totalQty   + vol / price
+            avgEntry   := totalSpent / totalQty
+            tpLevel    := avgEntry * (1.0 + tpPct)
+            soFilled   := n
+        else
+            break
+
+// ── Take profit ───────────────────────────────────────────────────────────────
+
+if inDeal and inDateRange and high >= tpLevel and barstate.isconfirmed
+    strategy.close("DCA", comment="TP")
+    basePrice  := na
+    avgEntry   := na
+    tpLevel    := na
+    totalSpent := na
+    totalQty   := na
+    soFilled   := 0
+    inDeal     := false
+
+// ── Visuals ───────────────────────────────────────────────────────────────────
+
+longColor = color.rgb(57, 255, 20)
+tpColor   = color.rgb(0, 200, 100)
+soColor   = color.rgb(255, 165, 0)
+avgColor  = color.rgb(255, 255, 0)
+
+plot(showAvgLine and inDeal ? avgEntry : na, "Avg Entry",
+     color=avgColor, style=plot.style_linebr, linewidth=1)
+plot(showLevels and inDeal ? tpLevel : na, "TP Level",
+     color=tpColor, style=plot.style_linebr, linewidth=1)
+
+// SO trigger levels (up to 5 shown)
+float boVolDisplay = strategy.equity * 0.33 / totalFactor()
+plot(showLevels and inDeal and maxSo >= 1 and soFilled < 1 ? soTrigger(1) : na,
+     "SO1", color=soColor, style=plot.style_linebr, linewidth=1)
+plot(showLevels and inDeal and maxSo >= 2 and soFilled < 2 ? soTrigger(2) : na,
+     "SO2", color=soColor, style=plot.style_linebr, linewidth=1)
+plot(showLevels and inDeal and maxSo >= 3 and soFilled < 3 ? soTrigger(3) : na,
+     "SO3", color=soColor, style=plot.style_linebr, linewidth=1)
+plot(showLevels and inDeal and maxSo >= 4 and soFilled < 4 ? soTrigger(4) : na,
+     "SO4", color=soColor, style=plot.style_linebr, linewidth=1)
+plot(showLevels and inDeal and maxSo >= 5 and soFilled < 5 ? soTrigger(5) : na,
+     "SO5", color=soColor, style=plot.style_linebr, linewidth=1)
+
+barcolor(colorBars and inDeal ? longColor : na)
+
+// ── Confidence score ──────────────────────────────────────────────────────────
+// While in a deal: % of the way from avg entry to the TP target.
+// 0 = just opened, 100 = price has reached TP.
+
+confidence = inDeal and not na(avgEntry) and not na(tpLevel) ?
+     math.round(math.max(0.0, math.min((close - avgEntry) / math.max(tpLevel - avgEntry, 0.01) * 100.0, 100.0))) : 0
+confStr = inDeal ? str.tostring(confidence) + " / 100" : "—"
+confCol = not inDeal       ? color.gray   :
+          confidence >= 70  ? color.green  :
+          confidence >= 40  ? color.yellow : color.red
+
+// ── Info table ────────────────────────────────────────────────────────────────
+
+soDepth = soStep * maxSo * 100
+
+var table info = table.new(position.top_right, 2, 10, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "Take Profit",  text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 0, str.tostring(math.round(tpPct * 100, 0)) + "%",
+               text_color=color.rgb(0, 200, 100))
+    table.cell(info, 0, 1, "SO Step",      text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 1, str.tostring(math.round(soStep * 100, 0)) + "%",
+               text_color=color.rgb(255, 165, 0))
+    table.cell(info, 0, 2, "Max SOs",      text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 2, str.tostring(maxSo),
+               text_color=color.rgb(255, 165, 0))
+    table.cell(info, 0, 3, "SO Depth",     text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 3, str.tostring(math.round(soDepth, 0)) + "% max",
+               text_color=color.gray)
+    table.cell(info, 0, 4, "SO Ratio",     text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 4, "0.75 × 1.05ⁿ",text_color=color.gray)
+    table.cell(info, 0, 5, "Avg Entry",    text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 5, inDeal ? str.tostring(math.round(avgEntry, 2)) : "—",
+               text_color=color.rgb(255, 255, 0))
+    table.cell(info, 0, 6, "SOs Filled",   text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 6, inDeal ? str.tostring(soFilled) + " / " + str.tostring(maxSo) : "—",
+               text_color=color.white)
+    table.cell(info, 0, 7, "Position",     text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 7, "33% / trade",  text_color=color.yellow)
+    table.cell(info, 0, 8, "Fee",          text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 8, "1.5% / leg",   text_color=color.yellow)
+    table.cell(info, 0, 9, "Confidence",   text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 9, confStr,        text_color=confCol)

@@ -1,0 +1,142 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// Ichimoku Cloud Strategy — optimized for large-cap tech (long-only)
+// Run strategy_ichimoku/tests/test_largecap.py to update default params below.
+
+//@version=5
+strategy("Ichimoku Cloud — Large Cap", shorttitle="IchimokuLC",
+         overlay=true,
+         initial_capital=1500,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=33,
+         commission_type=strategy.commission.percent,
+         commission_value=1.5,
+         pyramiding=0,
+         process_orders_on_close=false)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+tenkanPeriod  = input.int(9,  "Tenkan Period",   minval=1, group="Ichimoku")
+kijunPeriod   = input.int(26, "Kijun Period",    minval=1, group="Ichimoku")
+senkouBPeriod = input.int(52, "Senkou B Period", minval=1, group="Ichimoku")
+
+useCloud  = input.bool(true, "Cloud Color Filter",  group="Filters",
+             tooltip="Only enter when future cloud is bullish (SpanA > SpanB)")
+useChikou = input.bool(true, "Chikou Confirmation", group="Filters",
+             tooltip="Only enter when close > close[kijun] bars ago")
+
+slPct = input.float(0.0, "Stop Loss %  (0 = off)", minval=0.0, maxval=30.0, step=0.5, group="Risk")
+
+// ── Ichimoku Calculations ─────────────────────────────────────────────────────
+tenkan  = (ta.highest(high, tenkanPeriod)  + ta.lowest(low, tenkanPeriod))  / 2
+kijun   = (ta.highest(high, kijunPeriod)   + ta.lowest(low, kijunPeriod))   / 2
+senkouA = (tenkan + kijun) / 2
+senkouB = (ta.highest(high, senkouBPeriod) + ta.lowest(low, senkouBPeriod)) / 2
+chikou  = close
+
+displacement = kijunPeriod
+cloudTop    = math.max(senkouA[displacement], senkouB[displacement])
+cloudBottom = math.min(senkouA[displacement], senkouB[displacement])
+
+// ── Signal Logic ──────────────────────────────────────────────────────────────
+tkCrossUp   = ta.crossover(tenkan,  kijun)
+tkCrossDown = ta.crossunder(tenkan, kijun)
+
+cloudOk  = not useCloud  or (senkouA > senkouB)
+chikouOk = not useChikou or (chikou > close[displacement])
+
+priceAboveCloud = close > cloudTop
+priceBelowCloud = close < cloudBottom
+
+longEntrySignal = tkCrossUp and cloudOk and chikouOk
+longExitSignal  = tkCrossDown or priceBelowCloud
+
+// ── Strategy Execution ────────────────────────────────────────────────────────
+var float stopLevel = na
+
+if longEntrySignal and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    stopLevel := slPct > 0 ? close * (1.0 - slPct / 100.0) : na
+
+if longExitSignal and strategy.position_size > 0
+    strategy.close("Long", comment="Exit")
+    stopLevel := na
+
+if strategy.position_size > 0 and slPct > 0 and not na(stopLevel)
+    strategy.exit("SL", from_entry="Long", stop=stopLevel)
+
+if strategy.position_size == 0
+    stopLevel := na
+
+// ── Plots ─────────────────────────────────────────────────────────────────────
+tkColor = tenkan >= kijun ? color.new(#2962FF, 0) : color.new(#FF6D00, 0)
+plot(tenkan, "Tenkan",  color=tkColor, linewidth=2)
+plot(kijun,  "Kijun",   color=color.new(#FF6D00, 0), linewidth=2)
+plot(chikou, "Chikou",  color=color.new(#9C27B0, 0), offset=-displacement, linewidth=1)
+
+p1 = plot(senkouA, "Senkou A", color=color.new(#00E676, 0), offset=displacement, linewidth=1)
+p2 = plot(senkouB, "Senkou B", color=color.new(#FF1744, 0), offset=displacement, linewidth=1)
+cloudColor = senkouA >= senkouB ? color.new(#00E676, 85) : color.new(#FF1744, 85)
+fill(p1, p2, color=cloudColor, title="Cloud")
+
+plot(strategy.position_size > 0 and slPct > 0 ? stopLevel : na,
+     "Stop Loss", color=color.red, style=plot.style_linebr, linewidth=2)
+
+plotshape(longEntrySignal,
+          title="Buy",  location=location.belowbar,
+          color=color.new(#00E676, 0), style=shape.triangleup, size=size.small, text="BUY")
+plotshape(longExitSignal and strategy.position_size > 0,
+          title="Sell", location=location.abovebar,
+          color=color.new(#FF1744, 0), style=shape.triangledown, size=size.small, text="SELL")
+
+bgcolor(priceAboveCloud ? color.new(#00E676, 96) : na, title="Above Cloud BG")
+bgcolor(priceBelowCloud ? color.new(#FF1744, 96) : na, title="Below Cloud BG")
+
+// ── Confidence & Info Table ───────────────────────────────────────────────────
+tkBull     = tenkan > kijun                 ? 1 : 0
+cldBull    = senkouA > senkouB              ? 1 : 0
+chkBull    = chikou > close[displacement]   ? 1 : 0
+abvCloud   = close > cloudTop               ? 1 : 0
+confidence = (tkBull + cldBull + chkBull + abvCloud) * 25
+
+inPos    = strategy.position_size > 0
+confStr  = inPos ? str.tostring(confidence) + "/100" : "--"
+confColor = confidence >= 75 ? color.new(#00E676, 0) : confidence >= 50 ? color.new(#FFEB3B, 0) : color.new(#FF1744, 0)
+
+var table tbl = table.new(position.top_right, 2, 7,
+                           bgcolor=color.new(#131722, 85),
+                           border_color=color.new(#363a45, 100),
+                           border_width=1,
+                           frame_color=color.new(#363a45, 100),
+                           frame_width=1)
+
+if barstate.islast
+    table.cell(tbl, 0, 0, "Ichimoku LC",
+               text_color=color.white, text_size=size.small,
+               bgcolor=color.new(#2962FF, 70))
+    table.cell(tbl, 1, 0, "",
+               bgcolor=color.new(#2962FF, 70))
+    table.cell(tbl, 0, 1, "Tenkan",
+               text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 1, str.tostring(tenkanPeriod),
+               text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 0, 2, "Kijun",
+               text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 2, str.tostring(kijunPeriod),
+               text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 0, 3, "Senkou B",
+               text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 3, str.tostring(senkouBPeriod),
+               text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 0, 4, "SL",
+               text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 4, slPct > 0 ? str.tostring(slPct, "#.##") + "%" : "off",
+               text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 0, 5, "Position",
+               text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 5, inPos ? "LONG" : "--",
+               text_color=inPos ? color.new(#00E676, 0) : color.gray,
+               text_size=size.tiny)
+    table.cell(tbl, 0, 6, "Confidence",
+               text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 6, confStr,
+               text_color=inPos ? confColor : color.gray,
+               text_size=size.tiny)

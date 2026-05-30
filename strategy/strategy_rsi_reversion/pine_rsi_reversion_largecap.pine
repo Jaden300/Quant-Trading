@@ -1,0 +1,144 @@
+// RSI Mean Reversion Strategy — Long Only, Cross-Asset Optimized
+//
+// HOW IT WORKS:
+//   Only trades stocks in an uptrend (close > SMA of trend_ma bars).
+//   Waits for RSI to pull back to oversold territory, then enters when RSI
+//   recovers back above the entry threshold — buying the dip as it bounces.
+//
+// Entry:
+//   close > SMA(trend_ma)               — uptrend filter
+//   RSI was below rsi_entry last bar    — stock was oversold
+//   RSI >= rsi_entry this bar           — RSI recovering (confirmed bounce)
+//   → go long at next bar's open
+//
+// Exit (whichever comes first):
+//   RSI >= rsi_exit                     — overbought, take profit
+//   low <= entry_price * (1 - sl_pct)   — stop loss hit intraday
+//
+// OPTIMIZED VALUES (10 stocks: NVDA GOOG AAPL MSFT AMZN AVGO META TSLA AMD NFLX)
+// Test window: Jan 2021 → Apr 2026  |  $1,500 capital  |  33% per trade  |  Long only
+// Best params: trend_ma=100  rsi_length=14  rsi_entry=40  rsi_exit=70  sl=12%
+// Score=0.012  |  Mean Sharpe=0.18  |  Avg return +5.1%  |  Avg drawdown -10.7%
+// NOTE: results are inconsistent across stocks (TSLA/GOOG lose). Use as confirming
+//       signal alongside RMA ATR Bands, not as a standalone strategy.
+
+//@version=6
+strategy("RSI Mean Reversion (Long Only)", overlay=true,
+         initial_capital=1500,
+         commission_type=strategy.commission.percent,
+         commission_value=1.5,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=33,
+         calc_on_every_tick=false)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+
+grp0 = "Date Filter"
+startDate = input.time(timestamp("2021-01-01"), "Start Date", group=grp0)
+
+grp1 = "Trend Filter"
+trendMa = input.int(100, "Trend MA (SMA)", minval=5, maxval=300, group=grp1,
+          tooltip="Price must be above this SMA to consider long entries.")
+
+grp2 = "RSI Settings"
+rsiLength = input.int  (14,   "RSI Length",     minval=2,   maxval=50,  group=grp2)
+rsiEntry  = input.float(40.0, "RSI Entry Level", minval=20,  maxval=60,  step=1.0, group=grp2,
+            tooltip="Enter when RSI crosses back above this level from below (oversold bounce).")
+rsiExit   = input.float(70.0, "RSI Exit Level",  minval=50,  maxval=90,  step=1.0, group=grp2,
+            tooltip="Exit when RSI reaches this level (overbought).")
+
+grp3 = "Risk"
+slPct = input.float(0.12, "Stop Loss %", minval=0.01, maxval=0.30, step=0.01, group=grp3,
+        tooltip="Stop loss distance below entry price.")
+
+grp4 = "Display"
+showSignals = input.bool(true, "Show Signals", group=grp4)
+colorBars   = input.bool(true, "Color Bars",   group=grp4)
+
+// ── Indicators ────────────────────────────────────────────────────────────────
+
+ma  = ta.sma(close, trendMa)
+rsi = ta.rsi(close, rsiLength)
+
+// ── Strategy logic ────────────────────────────────────────────────────────────
+
+inUptrend  = close > ma
+rsiWasLow  = rsi[1] < rsiEntry
+rsiBounced = rsi >= rsiEntry
+
+longSignal = inUptrend and rsiWasLow and rsiBounced and strategy.position_size == 0
+
+// ── Stop loss tracking ────────────────────────────────────────────────────────
+
+var float stopPrice = na
+
+if strategy.position_size > 0 and not na(stopPrice)
+    if low <= stopPrice
+        strategy.close("Long", comment="STOP")
+        stopPrice := na
+
+// ── Execution ─────────────────────────────────────────────────────────────────
+
+inDateRange = time >= startDate
+
+if longSignal and inDateRange
+    strategy.entry("Long", strategy.long, comment="LONG")
+    stopPrice := strategy.position_avg_price * (1.0 - slPct)
+
+if strategy.position_size > 0 and rsi >= rsiExit and inDateRange
+    strategy.close("Long", comment="RSI EXIT")
+    stopPrice := na
+
+if strategy.position_size == 0
+    stopPrice := na
+
+// ── Visuals ───────────────────────────────────────────────────────────────────
+
+inPos     = strategy.position_size > 0
+maColor   = inPos ? color.rgb(57, 255, 20) : color.gray
+stopColor = color.rgb(255, 80, 80)
+
+plot(ma, "Trend MA", color=maColor, linewidth=2)
+plot(inPos and not na(stopPrice) ? stopPrice : na, "Stop", color=stopColor,
+     style=plot.style_linebr, linewidth=1)
+
+plotshape(showSignals and longSignal and inDateRange,
+     style=shape.triangleup, location=location.belowbar,
+     color=color.rgb(57, 255, 20), text="LONG", size=size.small)
+
+plotshape(showSignals and strategy.position_size[1] > 0 and strategy.position_size == 0 and inDateRange,
+     style=shape.triangledown, location=location.abovebar,
+     color=color.rgb(255, 165, 0), text="EXIT", size=size.small)
+
+barcolor(colorBars ? (inPos ? color.rgb(57, 255, 20) : na) : na)
+
+// ── RSI panel ─────────────────────────────────────────────────────────────────
+
+rsiColor = rsi >= rsiExit  ? color.rgb(255, 80, 80) :
+           rsi <= rsiEntry ? color.rgb(57, 255, 20) : color.gray
+
+plot(rsi,      "RSI",        color=rsiColor, display=display.pane)
+hline(rsiExit, "RSI Exit",   color=color.rgb(255, 80,  80, 60))
+hline(rsiEntry,"RSI Entry",  color=color.rgb(57,  255, 20, 60))
+hline(50,      "RSI Mid",    color=color.gray, linestyle=hline.style_dotted)
+
+// ── Info table ────────────────────────────────────────────────────────────────
+
+var table info = table.new(position.top_right, 2, 7, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "Trend MA",   text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 0, str.tostring(trendMa) + " SMA",  text_color=color.white)
+    table.cell(info, 0, 1, "RSI Length", text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 1, str.tostring(rsiLength),          text_color=color.white)
+    table.cell(info, 0, 2, "RSI Entry",  text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 2, str.tostring(rsiEntry),           text_color=color.rgb(57, 255, 20))
+    table.cell(info, 0, 3, "RSI Exit",   text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 3, str.tostring(rsiExit),            text_color=color.rgb(255, 80, 80))
+    table.cell(info, 0, 4, "Stop Loss",  text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 4, str.tostring(math.round(slPct * 100, 0)) + "%",
+               text_color=color.rgb(255, 165, 0))
+    table.cell(info, 0, 5, "Position",   text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 5, "33% / trade", text_color=color.yellow)
+    table.cell(info, 0, 6, "Fee",        text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 6, "1.5% / leg", text_color=color.yellow)

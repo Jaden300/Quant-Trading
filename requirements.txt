@@ -1,0 +1,6 @@
+yfinance>=0.2.38
+numpy>=1.26
+pandas>=2.1
+matplotlib>=3.8
+seaborn>=0.13
+tqdm>=4.66

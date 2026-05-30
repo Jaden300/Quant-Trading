@@ -1,0 +1,92 @@
+// Keltner Channel Strategy
+//
+// HOW IT WORKS:
+//   - Draws a channel (upper/lower band) around a moving average using volatility
+//   - When price breaks OUT above the upper band → buy-stop entry (catching breakout momentum)
+//   - When price breaks OUT below the lower band → short-stop entry
+//   - Exit when price crosses back through the moving average
+//
+// TO GET OPTIMIZED VALUES: run test_keltner.py and plug in the top result below.
+// DEFAULT VALUES shown are the starting point before optimization.
+
+//@version=5
+strategy(
+     title             = "Keltner Channel Strategy",
+     overlay           = true,
+     initial_capital   = 100000,
+     currency          = currency.USD,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.1,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 95,
+     calc_on_every_tick = false
+ )
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+
+grp1 = "Channel Settings"
+length      = input.int   (20,    "MA Length",          minval=1,  group=grp1)
+mult        = input.float (2.0,   "Band Multiplier",    step=0.5,  group=grp1)
+atr_length  = input.int   (14,    "ATR Length",         minval=1,  group=grp1)
+use_ema     = input.bool  (true,  "Use EMA (off = SMA)",           group=grp1)
+bands_style = input.string("ATR", "Bands Style", options=["ATR", "TR", "Range"], group=grp1)
+
+// ── Indicators ────────────────────────────────────────────────────────────────
+
+ma = use_ema ? ta.ema(close, length) : ta.sma(close, length)
+
+tr_val = ta.tr(true)
+band_width = switch bands_style
+    "ATR"   => ta.rma(tr_val, atr_length) * mult
+    "TR"    => tr_val * mult
+    "Range" => (high - low) * mult
+
+upper = ma + band_width
+lower = ma - band_width
+
+// ── Signals ───────────────────────────────────────────────────────────────────
+
+cross_up = close[1] <= upper[1] and close > upper   // close just broke above upper band
+cross_dn = close[1] >= lower[1] and close < lower   // close just broke below lower band
+
+// ── Entry (stop orders placed one tick beyond the breakout bar) ───────────────
+
+if cross_up and strategy.position_size == 0
+    strategy.entry("Long",  strategy.long,  stop=high + syminfo.mintick, comment="KC Long")
+
+if cross_dn and strategy.position_size == 0
+    strategy.entry("Short", strategy.short, stop=low  - syminfo.mintick, comment="KC Short")
+
+// Cancel pending order if price has retreated back through the MA
+if close < ma and strategy.position_size == 0
+    strategy.cancel("Long")
+
+if close > ma and strategy.position_size == 0
+    strategy.cancel("Short")
+
+// ── Exit (close crosses back through MA) ─────────────────────────────────────
+
+if strategy.position_size > 0 and close < ma
+    strategy.close("Long",  comment="Exit Long")
+
+if strategy.position_size < 0 and close > ma
+    strategy.close("Short", comment="Exit Short")
+
+// ── Visuals ───────────────────────────────────────────────────────────────────
+
+plot(ma,    "MA",    color=color.new(color.orange, 0), linewidth=2)
+plot(upper, "Upper", color=color.new(color.blue,   40), linewidth=1)
+plot(lower, "Lower", color=color.new(color.blue,   40), linewidth=1)
+fill(plot(upper, display=display.none), plot(lower, display=display.none),
+     color=color.new(color.blue, 88), title="Channel Fill")
+
+// Breakout signals
+plotshape(cross_up and strategy.position_size == 0, "Long Signal",
+          shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(cross_dn and strategy.position_size == 0, "Short Signal",
+          shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
+
+// Background while in a trade
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 90) :
+        strategy.position_size < 0 ? color.new(color.red,   90) : na,
+        title="Position Background")

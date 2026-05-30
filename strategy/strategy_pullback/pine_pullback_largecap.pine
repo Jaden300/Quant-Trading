@@ -1,0 +1,116 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © your_username
+//
+// "Buy the Dip in an Uptrend" — Pullback Strategy
+//
+// HOW IT WORKS:
+//   1. Looks back long_period bars and checks that price went UP by at least trend_threshold
+//   2. Then checks that price has pulled DOWN by at least dip_threshold over the last short_period bars
+//   3. If both are true → places a buy-stop slightly above the current close
+//   4. Once filled, sets a Take Profit and Stop Loss from entry price
+//
+// SETTINGS: plug in the best values from your Python optimizer output (run_tsla.py)
+
+//@version=5
+strategy(
+     title             = "Buy the Dip in an Uptrend",
+     overlay           = true,
+     initial_capital   = 500,
+     currency          = currency.USD,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 1.5,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 100,
+     calc_on_every_tick = false
+ )
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+
+// ── OPTIMIZED VALUES (NVDA, GOOG, AAPL, MSFT, AMZN, AVGO — Apr 2025 → Apr 2026) ──
+// Cross-asset score: 0.72  |  Mean Sharpe: 0.97  |  Avg return: +21%
+// Per-ticker $500 results: NVDA +14%, GOOG +21%, AAPL +19%, MSFT +3%, AMZN +17%, AVGO +52%
+// You can tweak these in the Settings panel on TradingView
+
+grp1 = "Signal Parameters"
+long_period     = input.int  (15,    "Long Period (bars — the 'first month')",   minval=5,     group=grp1)
+short_period    = input.int  (8,     "Short Period (bars — the 'dip window')",   minval=3,     group=grp1)
+trend_threshold = input.float(0.02,  "Min Uptrend % (e.g. 0.02 = 2%)",          step=0.01,    group=grp1)
+dip_threshold   = input.float(0.02,  "Min Dip % (e.g. 0.02 = 2%)",              step=0.01,    group=grp1)
+
+grp2 = "Entry / Exit"
+stop_buffer     = input.float(0.02,  "Buy-Stop Buffer above close (e.g. 0.02 = 2%)", step=0.005, group=grp2)
+tp_pct          = input.float(0.25,  "Take Profit % from entry (e.g. 0.25 = 25%)",   step=0.01,  group=grp2)
+sl_pct          = input.float(0.12,  "Stop Loss % from entry   (e.g. 0.12 = 12%)",   step=0.01,  group=grp2)
+
+// ── Signal conditions ─────────────────────────────────────────────────────────
+
+price_long_ago  = close[long_period]
+price_short_ago = close[short_period]
+
+// Month 1: did price go UP from long_period bars ago → short_period bars ago?
+trend_ok = (price_short_ago / price_long_ago - 1.0) >= trend_threshold
+
+// Month 2: has price pulled DOWN from short_period bars ago → now?
+dip_ok = (close / price_short_ago - 1.0) <= -dip_threshold
+
+signal = trend_ok and dip_ok
+
+// ── Entry ─────────────────────────────────────────────────────────────────────
+
+buy_stop_price = close * (1.0 + stop_buffer)
+
+if signal and strategy.position_size == 0
+    strategy.entry("Long", strategy.long, stop=buy_stop_price,
+                   comment="BUY DIP")
+
+// Cancel the pending order if conditions are no longer met
+if not signal and strategy.position_size == 0
+    strategy.cancel("Long")
+
+// ── Exit ──────────────────────────────────────────────────────────────────────
+
+if strategy.position_size > 0
+    tp_price = strategy.position_avg_price * (1.0 + tp_pct)
+    sl_price = strategy.position_avg_price * (1.0 - sl_pct)
+    strategy.exit("Exit", from_entry="Long", limit=tp_price, stop=sl_price)
+
+// ── Visuals ───────────────────────────────────────────────────────────────────
+
+in_trade = strategy.position_size > 0
+
+// TP / SL lines while in a trade
+tp_line = in_trade ? strategy.position_avg_price * (1.0 + tp_pct) : na
+sl_line = in_trade ? strategy.position_avg_price * (1.0 - sl_pct) : na
+entry_line = in_trade ? strategy.position_avg_price : na
+
+plot(tp_line,    "Take Profit", color=color.new(color.green, 0),  style=plot.style_linebr, linewidth=1)
+plot(sl_line,    "Stop Loss",   color=color.new(color.red,   0),  style=plot.style_linebr, linewidth=1)
+plot(entry_line, "Entry",       color=color.new(color.white, 30), style=plot.style_linebr, linewidth=1)
+
+// Arrow below bar when signal fires and we're flat
+plotshape(
+     signal and not in_trade,
+     title     = "Dip Signal",
+     style     = shape.triangleup,
+     location  = location.belowbar,
+     color     = color.new(color.blue, 20),
+     size      = size.small,
+     text      = "DIP"
+ )
+
+// Green background while in a trade
+bgcolor(in_trade ? color.new(color.green, 90) : na, title="In Trade")
+
+// ── Info table ────────────────────────────────────────────────────────────────
+
+var table info = table.new(position.top_right, 2, 4, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "TP",          text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 0, str.tostring(tp_pct * 100, "#.0") + "%", text_color=color.green)
+    table.cell(info, 0, 1, "SL",          text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 1, str.tostring(sl_pct * 100, "#.0") + "%", text_color=color.red)
+    table.cell(info, 0, 2, "Commission",  text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 2, "1.5% / leg",  text_color=color.yellow)
+    table.cell(info, 0, 3, "Capital",     text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 3, "$500",        text_color=color.white)

@@ -1,0 +1,14 @@
+name: trading
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - pip:
+      - yfinance>=0.2.38
+      - tqdm>=4.66

@@ -1,0 +1,100 @@
+// Momentum Rotation — Top 3 of 10 large-cap tech stocks
+// Ranks by 6-month return, monthly rebalance, long only.
+// Load on any of the 10 stocks — table shows who to hold right now.
+// Requires TradingView Pro+ (10 security calls).
+
+//@version=6
+strategy("Momentum Rotation (Top 3)", overlay=true,
+         initial_capital=1500,
+         commission_type=strategy.commission.percent,
+         commission_value=1.5,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=33,
+         calc_on_every_tick=false)
+
+startDate  = input.time(timestamp("2019-01-01"), "Start Date")
+lookback   = input.int(126, "Lookback (bars, 126 = 6 months)", minval=5)
+topN       = input.int(3,   "Hold Top N",  minval=1, maxval=5)
+holdBuffer = input.int(1,   "Sell Buffer", minval=0)
+
+// ── 6-month returns ───────────────────────────────────────────────────────────
+ret(sym) =>
+    c = request.security(sym, "D", close)
+    c / c[lookback] - 1.0
+
+r1  = ret("NVDA")
+r2  = ret("GOOG")
+r3  = ret("AAPL")
+r4  = ret("MSFT")
+r5  = ret("AMZN")
+r6  = ret("AVGO")
+r7  = ret("META")
+r8  = ret("TSLA")
+r9  = ret("AMD")
+r10 = ret("NFLX")
+
+// ── Rank this ticker ──────────────────────────────────────────────────────────
+ticker  = syminfo.ticker
+thisRet = ticker == "NVDA" ? r1 : ticker == "GOOG" ? r2 : ticker == "AAPL" ? r3 :
+          ticker == "MSFT" ? r4 : ticker == "AMZN" ? r5 : ticker == "AVGO" ? r6 :
+          ticker == "META" ? r7 : ticker == "TSLA" ? r8 : ticker == "AMD"  ? r9 :
+          ticker == "NFLX" ? r10 : na
+
+gt(r, ref) => not na(r) and r > ref ? 1 : 0
+
+myRank = na(thisRet) ? 999 :
+         gt(r1,thisRet) + gt(r2,thisRet) + gt(r3,thisRet) + gt(r4,thisRet) +
+         gt(r5,thisRet) + gt(r6,thisRet) + gt(r7,thisRet) + gt(r8,thisRet) +
+         gt(r9,thisRet) + gt(r10,thisRet)
+
+// ── Monthly rebalance ─────────────────────────────────────────────────────────
+isRebal     = ta.change(time("M")) != 0 or barstate.isfirst
+inDateRange = time >= startDate
+
+var int heldRank = 999
+if isRebal
+    heldRank := myRank
+
+if isRebal and inDateRange
+    if heldRank < topN and strategy.position_size == 0
+        strategy.entry("Long", strategy.long)
+    if heldRank >= topN + holdBuffer and strategy.position_size > 0
+        strategy.close("Long")
+
+// ── Table: current rankings ───────────────────────────────────────────────────
+float[] rv = array.from(r1, r2, r3, r4, r5, r6, r7, r8, r9, r10)
+string[] sv = array.from("NVDA","GOOG","AAPL","MSFT","AMZN","AVGO","META","TSLA","AMD","NFLX")
+
+for p = 0 to 8
+    for j = 0 to 8 - p
+        if array.get(rv, j) < array.get(rv, j + 1)
+            tr = array.get(rv, j)
+            ts = array.get(sv, j)
+            array.set(rv, j,     array.get(rv, j + 1))
+            array.set(sv, j,     array.get(sv, j + 1))
+            array.set(rv, j + 1, tr)
+            array.set(sv, j + 1, ts)
+
+var table tbl = table.new(position.top_right, 3, 12, border_width=1)
+
+if barstate.islast
+    table.cell(tbl, 0, 0, "Rank",  text_color=color.white, bgcolor=color.gray)
+    table.cell(tbl, 1, 0, "Stock", text_color=color.white, bgcolor=color.gray)
+    table.cell(tbl, 2, 0, "6M",    text_color=color.white, bgcolor=color.gray)
+
+    for i = 0 to 9
+        held   = i < topN
+        bg     = held ? color.new(color.green, 55) : color.new(color.gray, 80)
+        rc     = array.get(rv, i)
+        rs     = not na(rc) ? str.tostring(math.round(rc * 100, 1)) + "%" : "?"
+        rcol   = not na(rc) and rc >= 0 ? color.green : color.red
+        table.cell(tbl, 0, i+1, "#" + str.tostring(i+1), text_color=color.white, bgcolor=bg)
+        table.cell(tbl, 1, i+1, array.get(sv, i),        text_color=color.white, bgcolor=bg)
+        table.cell(tbl, 2, i+1, rs,                       text_color=rcol,        bgcolor=bg)
+
+    inTop  = not na(thisRet) and myRank < topN
+    msg    = na(thisRet) ? "not tracked" : inTop ? "BUY / HOLD" : "stay out"
+    msgcol = na(thisRet) ? color.gray    : inTop ? color.green  : color.red
+    table.cell(tbl, 0, 11, ticker, text_color=color.white, bgcolor=color.gray)
+    table.cell(tbl, 1, 11, msg,    text_color=msgcol,      bgcolor=color.new(color.gray, 70))
+    table.cell(tbl, 2, 11, "",     text_color=color.white, bgcolor=color.new(color.gray, 70))
