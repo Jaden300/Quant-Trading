@@ -67,6 +67,7 @@ def run_backtest(
     commission: float = 0.015,
     risk_pct: float = 0.33,
     return_equity_curve: bool = False,
+    return_trades: bool = False,
     trade_start_idx: int = 0,
 ) -> dict:
     tp_pct  = float(params["tp_pct"]) / 100.0
@@ -148,6 +149,10 @@ def run_backtest(
     metrics = _calc_metrics(equity_curve, trades, initial_capital)
     if return_equity_curve:
         metrics["equity_curve"] = equity_curve
+        metrics["eq_dates"] = data.index[live_start:][:len(equity_curve)].tolist()
+    if return_trades:
+        metrics["trades"]    = trades
+        metrics["all_dates"] = data.index.tolist()
     return metrics
 
 
